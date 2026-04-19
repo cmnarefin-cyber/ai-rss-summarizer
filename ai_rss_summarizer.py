@@ -7,6 +7,7 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 from typing import List, Dict
 from dotenv import load_dotenv
+import sqlite3
 
 # Load secret variables (like Github Token and Webhooks)
 load_dotenv()
@@ -24,6 +25,9 @@ GITHUB_REPO = os.getenv("GITHUB_REPO", "cmnarefin-cyber/ai-rss-summarizer")
 
 # Webhook Config for Make/Zapier Integration
 AUTOMATION_WEBHOOK_URL = os.getenv("AUTOMATION_WEBHOOK_URL")
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
 # Configure professional enterprise logging
 logging.basicConfig(
     level=logging.INFO,
@@ -78,8 +82,21 @@ class StrategicFeedSummarizer:
             response.raise_for_status()
             return response.json().get("response", "No summary generated.").strip()
         except Exception as e:
-            logger.error(f"Ollama error for '{title}': {e}")
-            return f"_Synthesis failed: {e}_"
+            logger.warning(f"Ollama offline for '{title}'. Falling back to Gemini API...")
+            if not GEMINI_API_KEY:
+                return f"_Synthesis failed. Ollama offline and no GEMINI_API_KEY provided._"
+            
+            gemini_payload = {
+                "contents": [{"parts": [{"text": prompt}]}]
+            }
+            try:
+                gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+                resp = requests.post(gemini_url, json=gemini_payload, headers={"Content-Type": "application/json"}, timeout=30)
+                resp.raise_for_status()
+                return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            except Exception as ge:
+                logger.error(f"Gemini fallback failed: {ge}")
+                return f"_Synthesis failed entirely. Both local & cloud LLMs unavailable._"
 
     def post_to_github(self, content: str, title: str):
         """Posts the digest as a new GitHub Issue in the specified repository."""
@@ -104,6 +121,30 @@ class StrategicFeedSummarizer:
             logger.info(f"Successfully posted to GitHub! Issue URL: {response.json().get('html_url')}")
         except Exception as e:
             logger.error(f"Failed to post to GitHub: {e}")
+
+    def log_to_database(self, title: str, url: str, synthesis: str):
+        """Archives the digest locally into a SQLite database."""
+        db_path = os.path.join(self.output_dir, 'ai_digests.db')
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute('''CREATE TABLE IF NOT EXISTS digests (id INTEGER PRIMARY KEY, date TEXT, title TEXT, url TEXT, synthesis TEXT)''')
+            cursor.execute('INSERT INTO digests (date, title, url, synthesis) VALUES (?, ?, ?, ?)', 
+                           (datetime.now().isoformat(), title, url, synthesis))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Failed to log to SQLite Database: {e}")
+
+    def post_to_discord(self, title: str, feed_url: str, summary: str):
+        """Pushes an alert to a Discord channel."""
+        if not DISCORD_WEBHOOK_URL:
+            return
+        data = { "content": f"🚨 **New Intel Digest**: {title}\n*Source:* <{feed_url}>\n\n> {summary[:1500]}" }
+        try:
+            requests.post(DISCORD_WEBHOOK_URL, json=data, timeout=10)
+        except Exception as e:
+            logger.error(f"Discord Hook failed: {e}")
 
     def post_to_webhook(self, content: str, title: str):
         """Sends the digest to a Make.com or Zapier webhook."""
@@ -131,6 +172,10 @@ class StrategicFeedSummarizer:
         raw_summary = entry.get("summary", entry.get("description", ""))
         clean_text = self.get_text_from_html(raw_summary)
         ai_summary = self.summarize_with_ollama(clean_text, title)
+        
+        # Log entry to local SQL database and Discord
+        self.log_to_database(title, link, ai_summary)
+        self.post_to_discord(title, link, ai_summary)
         
         return {"title": title, "link": link, "synthesis": ai_summary}
 
