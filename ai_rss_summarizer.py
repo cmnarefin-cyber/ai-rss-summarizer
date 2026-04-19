@@ -118,10 +118,10 @@ class StrategicFeedSummarizer:
         }
 
         try:
-            logger.info("Triggering automation webhook (Zapier/Make)...")
+            logger.info("Triggering automation webhook (n8n)...")
             response = requests.post(AUTOMATION_WEBHOOK_URL, json=data, timeout=15)
             response.raise_for_status()
-            logger.info("Successfully triggered webhook automation!")
+            logger.info("Successfully triggered n8n webhook automation!")
         except Exception as e:
             logger.error(f"Failed to trigger webhook: {e}")
 
@@ -178,7 +178,7 @@ class StrategicFeedSummarizer:
         # Deploy to GitHub
         self.post_to_github(consolidated_content, title)
         
-        # Trigger Zapier/Make automations
+        # Trigger n8n webhook automations
         self.post_to_webhook(consolidated_content, title)
 
 def main():
