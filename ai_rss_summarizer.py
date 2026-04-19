@@ -6,6 +6,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from bs4 import BeautifulSoup
 from typing import List, Dict
+from dotenv import load_dotenv
+
+# Load secret variables (like Github Token and Webhooks)
+load_dotenv()
 
 # --- CONFIGURATION ---
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
@@ -18,6 +22,8 @@ MAX_WORKERS = 4
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "cmnarefin-cyber/ai-rss-summarizer")
 
+# Webhook Config for Make/Zapier Integration
+AUTOMATION_WEBHOOK_URL = os.getenv("AUTOMATION_WEBHOOK_URL")
 # Configure professional enterprise logging
 logging.basicConfig(
     level=logging.INFO,
@@ -99,6 +105,26 @@ class StrategicFeedSummarizer:
         except Exception as e:
             logger.error(f"Failed to post to GitHub: {e}")
 
+    def post_to_webhook(self, content: str, title: str):
+        """Sends the digest to a Make.com or Zapier webhook."""
+        if not AUTOMATION_WEBHOOK_URL:
+            logger.warning("AUTOMATION_WEBHOOK_URL not found. Skipping webhook trigger.")
+            return
+
+        data = {
+            "title": title,
+            "content": content,
+            "timestamp": datetime.now().isoformat()
+        }
+
+        try:
+            logger.info("Triggering automation webhook (Zapier/Make)...")
+            response = requests.post(AUTOMATION_WEBHOOK_URL, json=data, timeout=15)
+            response.raise_for_status()
+            logger.info("Successfully triggered webhook automation!")
+        except Exception as e:
+            logger.error(f"Failed to trigger webhook: {e}")
+
     def process_feed_entry(self, entry: feedparser.FeedParserDict) -> Dict[str, str]:
         title = entry.get('title', 'Unknown Title')
         link = entry.get('link', '#')
@@ -151,6 +177,9 @@ class StrategicFeedSummarizer:
         
         # Deploy to GitHub
         self.post_to_github(consolidated_content, title)
+        
+        # Trigger Zapier/Make automations
+        self.post_to_webhook(consolidated_content, title)
 
 def main():
     summarizer = StrategicFeedSummarizer()
